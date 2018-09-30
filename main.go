@@ -1,28 +1,29 @@
 package main
 
 import (
-	"log"
-	"net"
-	"net/http"
+	"os"
+	"os/signal"
+	"runtime/debug"
 	"time"
-
-	"golang.org/x/net/netutil"
 )
 
+const version = "1.1.7"
+
 func main() {
-	l, err := net.Listen("tcp", conf.Bind)
-	if err != nil {
-		log.Fatal(err)
-	}
+	// Force garbage collection
+	go func() {
+		for _ = range time.Tick(10 * time.Second) {
+			debug.FreeOSMemory()
+		}
+	}()
 
-	s := &http.Server{
-		Handler:        newHttpHandler(),
-		ReadTimeout:    time.Duration(conf.ReadTimeout) * time.Second,
-		WriteTimeout:   time.Duration(conf.WriteTimeout) * time.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
+	s := startServer()
 
-	log.Printf("Starting server at %s\n", conf.Bind)
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, os.Kill)
 
-	log.Fatal(s.Serve(netutil.LimitListener(l, conf.MaxClients)))
+	<-stop
+
+	shutdownServer(s)
+	shutdownVips()
 }

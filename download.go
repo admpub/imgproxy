@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"image"
@@ -18,9 +19,7 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-var downloadClient = http.Client{
-	Timeout: time.Duration(conf.DownloadTimeout) * time.Second,
-}
+var downloadClient *http.Client
 
 type netReader struct {
 	reader *bufio.Reader
@@ -57,41 +56,74 @@ func (r *netReader) GrowBuf(s int) {
 	r.buf.Grow(s)
 }
 
-func checkTypeAndDimensions(r io.Reader) error {
-	imgconf, _, err := image.DecodeConfig(r)
-	if err != nil {
-		return err
+func initDownloading() {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
 	}
-	if imgconf.Width > conf.MaxSrcDimension || imgconf.Height > conf.MaxSrcDimension {
-		return errors.New("File is too big")
+
+	if conf.IgnoreSslVerification {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
-	return nil
+
+	if conf.LocalFileSystemRoot != "" {
+		transport.RegisterProtocol("local", http.NewFileTransport(http.Dir(conf.LocalFileSystemRoot)))
+	}
+
+	downloadClient = &http.Client{
+		Timeout:   time.Duration(conf.DownloadTimeout) * time.Second,
+		Transport: transport,
+	}
 }
 
-func readAndCheckImage(res *http.Response) ([]byte, error) {
+func checkTypeAndDimensions(r io.Reader) (imageType, error) {
+	imgconf, imgtypeStr, err := image.DecodeConfig(r)
+	imgtype, imgtypeOk := imageTypes[imgtypeStr]
+
+	if err != nil {
+		return UNKNOWN, err
+	}
+	if imgconf.Width > conf.MaxSrcDimension || imgconf.Height > conf.MaxSrcDimension {
+		return UNKNOWN, errors.New("Source image is too big")
+	}
+	if imgconf.Width*imgconf.Height > conf.MaxSrcResolution {
+		return UNKNOWN, errors.New("Source image is too big")
+	}
+	if !imgtypeOk || !vipsTypeSupportLoad[imgtype] {
+		return UNKNOWN, errors.New("Source image type not supported")
+	}
+
+	return imgtype, nil
+}
+
+func readAndCheckImage(res *http.Response) ([]byte, imageType, error) {
 	nr := newNetReader(res.Body)
 
-	if err := checkTypeAndDimensions(nr); err != nil {
-		return nil, err
+	imgtype, err := checkTypeAndDimensions(nr)
+	if err != nil {
+		return nil, UNKNOWN, err
 	}
 
 	if res.ContentLength > 0 {
 		nr.GrowBuf(int(res.ContentLength))
 	}
 
-	return nr.ReadAll()
+	b, err := nr.ReadAll()
+
+	return b, imgtype, err
 }
 
-func downloadImage(url string) ([]byte, error) {
-	res, err := downloadClient.Get(url)
+func downloadImage(url string) ([]byte, imageType, error) {
+	fullURL := fmt.Sprintf("%s%s", conf.BaseURL, url)
+
+	res, err := downloadClient.Get(fullURL)
 	if err != nil {
-		return nil, err
+		return nil, UNKNOWN, err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != 200 {
 		body, _ := ioutil.ReadAll(res.Body)
-		return nil, fmt.Errorf("Can't download image; Status: %d; %s", res.StatusCode, string(body))
+		return nil, UNKNOWN, fmt.Errorf("Can't download image; Status: %d; %s", res.StatusCode, string(body))
 	}
 
 	return readAndCheckImage(res)

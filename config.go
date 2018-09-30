@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
+	"runtime"
 	"strconv"
 )
 
@@ -16,9 +18,22 @@ func intEnvConfig(i *int, name string) {
 	}
 }
 
+func megaIntEnvConfig(f *int, name string) {
+	if env, err := strconv.ParseFloat(os.Getenv(name), 64); err == nil {
+		*f = int(env * 1000000)
+	}
+}
+
 func strEnvConfig(s *string, name string) {
 	if env := os.Getenv(name); len(env) > 0 {
 		*s = env
+	}
+}
+
+func boolEnvConfig(b *bool, name string) {
+	*b = false
+	if env, err := strconv.ParseBool(os.Getenv(name)); err == nil {
+		*b = env
 	}
 }
 
@@ -61,14 +76,18 @@ func hexFileConfig(b *[]byte, filepath string) {
 type config struct {
 	Bind            string
 	ReadTimeout     int
+	WaitTimeout     int
 	WriteTimeout    int
 	DownloadTimeout int
 	Concurrency     int
 	MaxClients      int
 	TTL             int
 
-	MaxSrcDimension int
+	MaxSrcDimension  int
+	MaxSrcResolution int
 
+	JpegProgressive bool
+	PngInterlaced   bool
 	Quality         int
 	GZipCompression int
 
@@ -76,24 +95,47 @@ type config struct {
 	Salt []byte
 
 	Secret string
+
+	AllowOrigin string
+
+	IgnoreSslVerification bool
+
+	LocalFileSystemRoot string
+
+	ETagEnabled bool
+
+	BaseURL string
 }
 
 var conf = config{
-	Bind:            ":8080",
-	ReadTimeout:     10,
-	WriteTimeout:    10,
-	DownloadTimeout: 5,
-	Concurrency:     100,
-	TTL:             3600,
-	MaxSrcDimension: 4096,
-	Quality:         80,
-	GZipCompression: 5,
+	Bind:                  ":8080",
+	ReadTimeout:           10,
+	WriteTimeout:          10,
+	DownloadTimeout:       5,
+	Concurrency:           runtime.NumCPU() * 2,
+	TTL:                   3600,
+	IgnoreSslVerification: false,
+	MaxSrcDimension:       8192,
+	MaxSrcResolution:      16800000,
+	Quality:               80,
+	GZipCompression:       5,
+	ETagEnabled:           false,
 }
 
 func init() {
 	keypath := flag.String("keypath", "", "path of the file with hex-encoded key")
 	saltpath := flag.String("saltpath", "", "path of the file with hex-encoded salt")
+	showVersion := flag.Bool("v", false, "show version")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
+
+	if port := os.Getenv("PORT"); len(port) > 0 {
+		conf.Bind = fmt.Sprintf(":%s", port)
+	}
 
 	strEnvConfig(&conf.Bind, "IMGPROXY_BIND")
 	intEnvConfig(&conf.ReadTimeout, "IMGPROXY_READ_TIMEOUT")
@@ -105,7 +147,10 @@ func init() {
 	intEnvConfig(&conf.TTL, "IMGPROXY_TTL")
 
 	intEnvConfig(&conf.MaxSrcDimension, "IMGPROXY_MAX_SRC_DIMENSION")
+	megaIntEnvConfig(&conf.MaxSrcResolution, "IMGPROXY_MAX_SRC_RESOLUTION")
 
+	boolEnvConfig(&conf.JpegProgressive, "IMGPROXY_JPEG_PROGRESSIVE")
+	boolEnvConfig(&conf.PngInterlaced, "IMGPROXY_PNG_INTERLACED")
 	intEnvConfig(&conf.Quality, "IMGPROXY_QUALITY")
 	intEnvConfig(&conf.GZipCompression, "IMGPROXY_GZIP_COMPRESSION")
 
@@ -116,6 +161,16 @@ func init() {
 	hexFileConfig(&conf.Salt, *saltpath)
 
 	strEnvConfig(&conf.Secret, "IMGPROXY_SECRET")
+
+	strEnvConfig(&conf.AllowOrigin, "IMGPROXY_ALLOW_ORIGIN")
+
+	boolEnvConfig(&conf.IgnoreSslVerification, "IMGPROXY_IGNORE_SSL_VERIFICATION")
+
+	strEnvConfig(&conf.LocalFileSystemRoot, "IMGPROXY_LOCAL_FILESYSTEM_ROOT")
+
+	boolEnvConfig(&conf.ETagEnabled, "IMGPROXY_USE_ETAG")
+
+	strEnvConfig(&conf.BaseURL, "IMGPROXY_BASE_URL")
 
 	if len(conf.Key) == 0 {
 		log.Fatalln("Key is not defined")
@@ -145,7 +200,7 @@ func init() {
 	}
 
 	if conf.MaxClients <= 0 {
-		conf.MaxClients = conf.Concurrency * 2
+		conf.MaxClients = conf.Concurrency * 10
 	}
 
 	if conf.TTL <= 0 {
@@ -154,6 +209,10 @@ func init() {
 
 	if conf.MaxSrcDimension <= 0 {
 		log.Fatalf("Max src dimension should be greater than 0, now - %d\n", conf.MaxSrcDimension)
+	}
+
+	if conf.MaxSrcResolution <= 0 {
+		log.Fatalf("Max src resolution should be greater than 0, now - %d\n", conf.MaxSrcResolution)
 	}
 
 	if conf.Quality <= 0 {
@@ -167,4 +226,25 @@ func init() {
 	} else if conf.GZipCompression > 9 {
 		log.Fatalf("GZip compression can't be greater than 9, now - %d\n", conf.GZipCompression)
 	}
+
+	if conf.IgnoreSslVerification {
+		log.Println("Ignoring SSL verification is very unsafe. Hope you know what you're doing")
+	}
+
+	if conf.LocalFileSystemRoot != "" {
+		stat, err := os.Stat(conf.LocalFileSystemRoot)
+		if err != nil {
+			log.Fatalf("Cannot use local directory: %s", err)
+		} else {
+			if !stat.IsDir() {
+				log.Fatalf("Cannot use local directory: not a directory")
+			}
+		}
+		if conf.LocalFileSystemRoot == "/" {
+			log.Print("Exposing root via IMGPROXY_LOCAL_FILESYSTEM_ROOT is unsafe")
+		}
+	}
+
+	initVips()
+	initDownloading()
 }

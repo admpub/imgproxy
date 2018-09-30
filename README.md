@@ -3,6 +3,9 @@
 <img align="right" width="200" height="200" title="imgproxy logo"
      src="https://cdn.rawgit.com/DarthSim/imgproxy/master/logo.svg">
 
+[![Build Status](https://api.travis-ci.org/DarthSim/imgproxy.svg?branch=master)](https://travis-ci.org/DarthSim/imgproxy) [![Docker](https://img.shields.io/badge/docker-darthsim%2Fimgproxy-blue.svg)](https://hub.docker.com/r/darthsim/imgproxy/) [![MicroBadger Size](https://img.shields.io/microbadger/image-size/darthsim/imgproxy.svg)](https://hub.docker.com/r/darthsim/imgproxy/) [![Docker Pulls](https://img.shields.io/docker/pulls/darthsim/imgproxy.svg)](https://hub.docker.com/r/darthsim/imgproxy/)
+
+
 imgproxy is a fast and secure standalone server for resizing and converting remote images. The main principles of imgproxy are simplicity, speed, and security.
 
 imgproxy can be used to provide a fast and secure way to replace all the image resizing code of your web application (like calling ImageMagick or GraphicsMagick, or using libraries), while also being able to resize everything on the fly, fast and easy. imgproxy is also indispensable when handling lots of image resizing, especially when images come from a remote source.
@@ -10,6 +13,9 @@ imgproxy can be used to provide a fast and secure way to replace all the image r
 imgproxy does one thing — resizing remote images — and does it well. It works great when you need to resize multiple images on the fly to make them match your application design without preparing a ton of cached resized images or re-doing it every time the design changes.
 
 imgproxy is a Go application, ready to be installed and used in any Unix environment — also ready to be containerized using Docker.
+
+See this article for a good intro and all the juicy details! [imgproxy:
+Resize your images instantly and securely](https://evilmartians.com/chronicles/introducing-imgproxy)
 
 <a href="https://evilmartians.com/?utm_source=imgproxy">
 <img src="https://evilmartians.com/badges/sponsored-by-evil-martians.svg" alt="Sponsored by Evil Martians" width="236" height="54">
@@ -47,7 +53,7 @@ There are two ways you can install imgproxy:
 
 #### From the source
 
-1. First, install [libvips](https://github.com/jcupitt/libvips):
+1. First, install [libvips](https://github.com/jcupitt/libvips).
 
   ```bash
   # macOS
@@ -55,7 +61,10 @@ There are two ways you can install imgproxy:
   $ brew install vips
 
   # Ubuntu
-  $ sudo apt-get install libvips
+  # Ubuntu apt repository contains a pretty old version of libvips.
+  # It's recommended to use PPA with an up to date version.
+  $ sudo add-apt-repository ppa:dhor/myway
+  $ sudo apt-get install libvips-dev
   ```
 
   **Note:** Most libvips packages come with WebP support. If you want libvips to support WebP on macOS, you need to install it this way:
@@ -97,10 +106,10 @@ However, you can do it manually with a few steps:
 
 ```bash
 $ git clone https://github.com/DarthSim/imgproxy.git && cd imgproxy
-$ heroku git:remote -a your-application
-$ heroku config:set BUILDPACK_URL=https://github.com/DarthSim/heroku-buildpack-imgproxy.git \
-                    IMGPROXY_KEY=$YOUR_KEY \
-                    IMGPROXY_SALT=$YOUR_SALT
+$ heroku create your-application
+$ heroku buildpacks:add https://github.com/heroku/heroku-buildpack-apt
+$ heroku buildpacks:add https://github.com/heroku/heroku-buildpack-go
+$ heroku config:set IMGPROXY_KEY=$YOUR_KEY IMGPROXY_SALT=$YOUR_SALT
 $ git push heroku master
 ```
 
@@ -133,14 +142,19 @@ $ xxd -g 2 -l 64 -p /dev/random | tr -d '\n'
 * `IMGPROXY_READ_TIMEOUT` — the maximum duration (in seconds) for reading the entire image request, including the body. Default: `10`;
 * `IMGPROXY_WRITE_TIMEOUT` — the maximum duration (in seconds) for writing the response. Default: `10`;
 * `IMGPROXY_DOWNLOAD_TIMEOUT` — the maximum duration (in seconds) for downloading the source image. Default: `5`;
-* `IMGPROXY_CONCURRENCY` — the maximum number of image requests to be processed simultaneously. Default: `100`;
-* `IMGPROXY_MAX_CLIENTS` — the maximum number of simultaneous active connections. Default: `IMGPROXY_CONCURRENCY * 2`;
+* `IMGPROXY_CONCURRENCY` — the maximum number of image requests to be processed simultaneously. Default: double number of CPU cores;
+* `IMGPROXY_MAX_CLIENTS` — the maximum number of simultaneous active connections. Default: `IMGPROXY_CONCURRENCY * 10`;
+* `IMGPROXY_TTL` — duration in seconds sent in `Expires` and `Cache-Control: max-age` headers. Default: `3600` (1 hour);
+* `IMGPROXY_USE_ETAG` — when true, enables using [ETag](https://en.wikipedia.org/wiki/HTTP_ETag) header for the cache control. Default: false;
+* `IMGPROXY_LOCAL_FILESYSTEM_ROOT` — root of the local filesystem. See [Serving local files](#serving-local-files). Keep empty to disable serving of local files.
 
 #### Security
 
-imgproxy protects you from so-called image bombs. Here is how you can specify maximum image dimensions which you consider reasonable:
+imgproxy protects you from so-called image bombs. Here is how you can specify maximum image dimensions and resolution which you consider reasonable:
 
-* `IMGPROXY_MAX_SRC_DIMENSION` — the maximum dimensions of the source image, in pixels, for both width and height. Images with larger real size will be rejected. Default: `4096`;
+* `IMGPROXY_ALLOW_ORIGIN` - when set, enables CORS headers with provided origin. CORS headers are disabled by default.
+* `IMGPROXY_MAX_SRC_DIMENSION` — the maximum dimensions of the source image, in pixels, for both width and height. Images with larger real size will be rejected. Default: `8192`;
+* `IMGPROXY_MAX_SRC_RESOLUTION` — the maximum resolution of the source image, in megapixels. Images with larger real size will be rejected. Default: `16.8`;
 
 You can also specify a secret to enable authorization with the HTTP `Authorization` header:
 
@@ -150,6 +164,12 @@ You can also specify a secret to enable authorization with the HTTP `Authorizati
 
 * `IMGPROXY_QUALITY` — quality of the resulting image, percentage. Default: `80`;
 * `IMGPROXY_GZIP_COMPRESSION` — GZip compression level. Default: `5`;
+* `IMGPROXY_JPEG_PROGRESSIVE` — when true, enables progressive compression of JPEG. Default: false;
+* `IMGPROXY_PNG_INTERLACED` — when true, enables interlaced compression of PNG. Default: false;
+
+#### Miscellaneous
+
+* `IMGPROXY_BASE_URL` - base URL part which will be added to every requestsd image URL. For example, if base URL is `http://example.com/images` and `/path/to/image.png` is requested, imgproxy will download the image from `http://example.com/images/path/to/image.png`. Default: blank.
 
 ## Generating the URL
 
@@ -165,8 +185,7 @@ imgproxy supports the following resizing types:
 
 * `fit` — resizes the image while keeping aspect ratio to fit given size;
 * `fill` — resizes the image while keeping aspect ratio to fill given size and cropping projecting parts;
-* `crop` — crops the image to a given size;
-* `force` — resizes the image to a given size without maintaining the aspect ratio.
+* `crop` — crops the image to a given size.
 
 #### Width and height
 
@@ -181,7 +200,7 @@ When imgproxy needs to cut some parts of the image, it is guided by the gravity.
 * `ea` — east (right edge);
 * `we` — west (left edge);
 * `ce` — center;
-* `sm` — smart. `libvips` detects the most "interesting" section of the image and considers it as the center of the resulting image. **Note:** This value is only applicable with the `crop` resizing type.
+* `sm` — smart. `libvips` detects the most "interesting" section of the image and considers it as the center of the resulting image.
 
 #### Enlarge
 
@@ -202,21 +221,30 @@ Signature is a URL-safe Base64-encoded HMAC digest of the rest of the path inclu
 * Take the path after the signature — `/%resizing_type/%width/%height/%gravity/%enlarge/%encoded_url.%extension`;
 * Add salt to the beginning;
 * Calculate the HMAC digest using SHA256;
-* Encode the result with URL-secure Base64.
+* Encode the result with URL-safe Base64.
 
 You can find helpful code snippets in the `examples` folder.
+
+## Serving local files
+
+imgproxy can process files from your local filesystem. To use this feature do the following:
+
+1. Set `IMGPROXY_LOCAL_FILESYSTEM_ROOT` to your images directory path.
+2. Use `local:///path/to/image.jpg` as the source image url.
 
 ## Source image formats support
 
 imgproxy supports only the most popular image formats of the moment: PNG, JPEG, GIF and WebP.
 
-## Special thanks
+## Deployment
 
-Special thanks to [h2non](https://github.com/h2non) and all authors and contributors of [bimg](https://github.com/h2non/bimg).
+There is a special endpoint `/health`, which returns HTTP Status `200 OK` after server successfully starts. This can be used to check container readiness.
 
 ## Author
 
 Sergey "DarthSim" Aleksandrovich
+
+Many thanks to @romashamin for the awesome logo.
 
 ## License
 
